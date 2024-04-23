@@ -23,7 +23,7 @@ ${EXEC}: ${OBJFILES}
 ${OBJFILES}: ${SOURCES} ${ASMSOURCES} ${INCLUDES}
 
 run: ${EXEC}
-	./${EXEC} sensor_data config intermedio 7
+	./${EXEC}
 
 clean:
 	rm -f ${OBJFILES} *.o ${EXEC}

@@ -3,4 +3,4 @@
 
 void die(const char *fmt, ...);
 
-#endif // !UTIL_H
+#endif /* !UTIL_H */

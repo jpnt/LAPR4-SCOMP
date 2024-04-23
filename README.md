@@ -1,6 +1,6 @@
 # ApplicationsFileBot (US 2001)
 
-![ApplicationsFileBot Diagram](./diagram.drawio.svg)
+![ApplicationsFileBot Diagram](./svg/diagram.drawio.svg)
 
 ## Description
 
@@ -40,6 +40,7 @@ copied.
 
 To terminate the application, the parent process must handle the SIGINT signal.
 Upon reception, it should terminate all children and wait for their termination.
+
 The names of the input and output directories, the number of worker children, the
 time interval for periodic checking of new files, etc., should be configurable. This
 configuration can be achieved either through input parameters provided when
@@ -79,6 +80,19 @@ job references and files available).
 
 The Operator of the Backoffice will import the files produced by the Applications File Bot and 
 register the applications, creating candidates that dot not exist in the system.
+
+![ApplicationsFileBot Processes](./svg/processes.drawio.svg)
+
+---
+
+## Monitoring Input Directory: Polling vs Inotify
+
+Polling means regularly checking the state of something else, to see whether something has changed.
+Using inotify can be a more efficient and robust way to monitor directories for changes compared to 
+periodically polling the directory. However polling is easier and may not be required for our system.
+Also, to note, inotify is Linux specific, whereas polling works on almost any OS.
+
+This article sums up everything very well: https://helpful.knobs-dials.com/index.php/File_polling,_event_notification,_and_asynchronous_IO
 
 ---
 
