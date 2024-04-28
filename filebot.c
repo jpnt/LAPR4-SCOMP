@@ -15,42 +15,6 @@
 volatile sig_atomic_t terminate = 0;
 volatile sig_atomic_t dist_files = 0;
 
-/* structure for managing worker info using FIFO algorithm */
-typedef struct {
-	int** worker_pipes; /* int fd[2N][2] */
-	pid_t* pids;
-	int* ready;
-} st_workers;
-
-st_workers* st_workers_init(int** worker_pipes, int num_workers) {
-	st_workers* ws = (st_workers*)malloc(sizeof(st_workers));
-	if (ws == NULL) {
-		die("malloc:");
-	}
-
-	ws->worker_pipes = worker_pipes;
-	if (ws->worker_pipes == NULL) {
-		die("worker_pipes: cannot be NULL");
-	}
-
-	/* does not fill pids, done later after the creation of workers */
-	ws->pids = (pid_t*)malloc(num_workers * sizeof(pid_t));
-	if (ws->pids == NULL) {
-		die("malloc:");
-	}
-
-	long size = num_workers * sizeof(int);
-	ws->ready = (int*)malloc(size);
-	if (ws->ready == NULL) {
-		die("malloc:");
-	}
-
-	/* set all workers to ready state */
-	memset(ws->ready, 1, size);
-
-	return ws;
-}
-
 void handle_signal(const int signo) {
 	/* if new files are detected, a signal should be sent to the parent process */
 	if (signo == SIGUSR1) {
@@ -178,6 +142,50 @@ int new_files_detected(const char* input_dir) {
 	return 0;
 }
 
+void monitor_process(const char* input_dir, int interval_ms) {
+	/* file/watch descriptor */
+	int fd, wd;
+	char buf[BUFMAX];
+
+	/* inotify */
+	fd = inotify_init();
+	if (fd == -1) {
+		die("inotify_init:");
+	}
+
+	wd = inotify_add_watch(fd, input_dir, IN_CREATE);
+	if (wd == -1) {
+		die("inotify_add_watch:");
+	}
+
+	while(!terminate) {
+		write(STDOUT_FILENO, "Monitoring directory for new files...\n", 38);
+
+		/* monitor the directory, send signal to parent if detects a change */
+		ssize_t len = read(fd, buf, sizeof(buf));
+		if (len == -1) {
+			die("read:");
+		}
+
+		struct inotify_event *event;
+
+		for (char *ptr = buf; ptr < buf + len; ptr += sizeof(struct inotify_event) + event->len) {
+			event = (struct inotify_event *) ptr;
+			if (event->mask & IN_CREATE) {
+				printf("New file '%s' detected in directory '%s'\n", event->name, input_dir);
+				/* send signal */
+				dist_files = 1;
+			} else {
+				dist_files = 0;
+			}
+		}
+		usleep(interval_ms * 1000);
+	}
+
+	close(fd);
+	exit(0);
+}
+
 int main(int argc, char** argv) {
 	if (argc != 2) {
 		die("usage: %s [CONFIGFILE]", argv[0]);
@@ -216,7 +224,6 @@ int main(int argc, char** argv) {
 		if (worker_pipes == NULL) {
 			die("malloc:");
 		}
-
 		/* each pointer points to int fd[2] */
 		for(int i = 0; i < 2 * num_workers; i++) {
 			worker_pipes[i] = (int*)malloc(2 * sizeof(int));
@@ -224,7 +231,7 @@ int main(int argc, char** argv) {
 				die("malloc:");
 			}
 		}
-
+		/* create 2N pipes */
 		for(int i = 0; i < 2 * num_workers; i++) {
 			if(pipe(worker_pipes[i]) == -1) {
 				die("pipe:");
@@ -259,35 +266,30 @@ int main(int argc, char** argv) {
 			/* PARENT */
 			while(!terminate) {
 				if (dist_files) {
-					if (read(monitor_pipe[0], line, MAXLINE) == -1) {
+					if (read(monitor_pipe[0], buf, BUFMAX) == -1) {
 						die("read from monitor pipe:");
 					}
 				}
 			}
+			wait(NULL);
 		}
 
-		wait(NULL);
 
 		/* free memory */
 		for (int i = 0; i < num_workers; i++) {
 			free(worker_pipes[i]);
-		} free(worker_pipes);
+		}
+		
+		free(worker_pipes);
+
+		/* exit normally */
+		exit(0);
 
 	} else {
 		/* MONITOR */
 		close(monitor_pipe[0]);
-		monitor_process(input_dir); //TODO
-		// or
-		//while(1) {
-		//	if (new_files_detected(input_dir)) {
-		//		dist_files = 1;
-		//		write(monitor_pipe[1], "test\n", 5);
-		//	} else {
-		//		dist_files = 0;
-		//	}
-		//	usleep(interval_ms * 1000);
-		//}
+		monitor_process(input_dir, interval_ms);
 	}
 
-	return 0;
+	die("Error: filebot exited abnormally");
 }
