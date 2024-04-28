@@ -1,3 +1,4 @@
+#include <linux/limits.h>
 #include <signal.h>
 #include <stdio.h>
 #include <unistd.h>
@@ -9,13 +10,86 @@
 
 #include "util.h"
 
-volatile sig_atomic_t time_to_go;
+#define BUFMAX 1024
 
-void read_config_file(const char *filename, char* input_dir, char* output_dir, int* num_workers, int* interval_sec) {
+volatile sig_atomic_t terminate = 0;
+volatile sig_atomic_t dist_files = 0;
+
+/* structure for managing worker info using FIFO algorithm */
+typedef struct {
+	int** worker_pipes; /* int fd[2N][2] */
+	pid_t* pids;
+	int* ready;
+} st_workers;
+
+st_workers* st_workers_init(int** worker_pipes, int num_workers) {
+	st_workers* ws = (st_workers*)malloc(sizeof(st_workers));
+	if (ws == NULL) {
+		die("malloc:");
+	}
+
+	ws->worker_pipes = worker_pipes;
+	if (ws->worker_pipes == NULL) {
+		die("worker_pipes: cannot be NULL");
+	}
+
+	/* does not fill pids, done later after the creation of workers */
+	ws->pids = (pid_t*)malloc(num_workers * sizeof(pid_t));
+	if (ws->pids == NULL) {
+		die("malloc:");
+	}
+
+	long size = num_workers * sizeof(int);
+	ws->ready = (int*)malloc(size);
+	if (ws->ready == NULL) {
+		die("malloc:");
+	}
+
+	/* set all workers to ready state */
+	memset(ws->ready, 1, size);
+
+	return ws;
+}
+
+void handle_signal(const int signo) {
+	/* if new files are detected, a signal should be sent to the parent process */
+	if (signo == SIGUSR1) {
+		write(STDOUT_FILENO,"Parent process: received SIGUSR1\n",33);
+		dist_files = 1;
+	}
+	/* to terminate the application, the parent process must handle the SIGINT signal */
+	if (signo == SIGINT) {
+		write(STDOUT_FILENO,"Parent process: received SIGINT\n",32);
+		terminate = 1;
+	}
+}
+
+void sigaction_init(struct sigaction* act) {
+	/* zeroes sigaction structure */
+	memset(act, 0, sizeof(struct sigaction));
+	/* block all signals during signal handling */
+	if(sigfillset(&act->sa_mask) != 0) {
+		die("sigfillset:");
+	}
+	/* unblock signals */
+	sigdelset(&act->sa_mask, SIGUSR1);
+	sigdelset(&act->sa_mask, SIGUSR2);
+	sigdelset(&act->sa_mask, SIGINT);
+
+	act->sa_handler = handle_signal;
+	act->sa_flags = SA_RESTART;
+	/* register signal handlers */
+	sigaction(SIGUSR1, act, NULL);
+	sigaction(SIGUSR2, act, NULL);
+	sigaction(SIGINT, act, NULL);
+}
+
+void read_config_file(const char *filename, char* input_dir, char* output_dir,
+					int* num_workers, int* interval_ms) {
 	FILE* file = fopen(filename, "r");
 	if (file == NULL) {
 		die("Error opening file %s:", filename);
-		/* just to suppress a useless warning */
+		/* all exit(1) after die is just to suppress warning */
 		exit(1);
 	}
 
@@ -31,8 +105,8 @@ void read_config_file(const char *filename, char* input_dir, char* output_dir, i
 				strcpy(output_dir, value);
 			} else if (strcmp(key, "num_workers") == 0) {
 				*num_workers = atoi(value);
-			} else if (strcmp(key, "interval_sec") == 0) {
-				*interval_sec = atoi(value);
+			} else if (strcmp(key, "interval_ms") == 0) {
+				*interval_ms = atoi(value);
 			} else {
 				die("Error in configuration file: %s is not a valid option", key);
 			}
@@ -42,115 +116,36 @@ void read_config_file(const char *filename, char* input_dir, char* output_dir, i
 	/* invalid values */
 	if (input_dir == NULL) {
 		die("Error in configuration file: input_dir is null");
+		exit(1);
 	}
 	if (output_dir == NULL) {
 		die("Error in configuration file: output_dir is null");
+		exit(1);
 	}
 	if (*num_workers <= 0) {
 		die("Error in configuration file: num_workers must be > 0");
+		exit(1);
 	}
-	if (*interval_sec <= 0) {
-		die("Error in configuration file: interval_sec must be > 0");
+	if (*interval_ms <= 0) {
+		die("Error in configuration file: interval_ms must be > 0");
+		exit(1);
 	}
 
-	/* print values, for debugging */
-	printf("=========================\n");
+	printf("================================\n");
 	printf("Config file read:\n");
 	printf("input_dir = %s\n", input_dir);
 	printf("output_dir = %s\n", output_dir);
 	printf("num_workers = %d\n", *num_workers);
-	printf("interval_sec = %d\n", *interval_sec);
-	printf("=========================\n");
+	printf("interval_ms = %d\n", *interval_ms);
+	printf("================================\n");
 
 	fclose(file);
 }
 
-pid_t create_monitor_process(int* is_parent, int* is_monitor) {
-	pid_t pid;
-
-	if(!*is_parent) {
-		die("create_monitor_process: Only the parent can enter");
-	}
-
-	pid = fork();
-	if(pid == -1) {
-		die("fork:");
-	}
-	if (pid == 0) {
-		/* child */
-		*is_parent = 0;
-		*is_monitor = 1;
-		printf("Monitor process created (PID: %d)\n", getpid());
-		/* always return pid of monitor */
-		return getpid();
-	}
-	else {
-		/* parent */
-		wait(NULL);
-		printf("Parent process: Monitor Process created with pid %d\n", pid);
-		return pid;
-	}
-}
-
-pid_t create_worker_process(int idx, int* is_parent, int* is_worker) {
-	pid_t pid;
-
-	if (*is_parent) {
-		pid = fork();
-		if (pid == -1) {
-			die("fork:");
-		}
-		if (pid == 0) {
-			/* worker */
-			*is_parent = 0;
-			*is_worker = 1;
-			printf("Worker process %d created (PID: %d)\n", idx, getpid());
-			/* always return pid of worker */
-			return getpid();
-		}
-		else {
-			/* parent */
-			return pid;
-		}
-	}
-	
-	/* previous worker wont know pid of next workers */
-	/* also, monitor wont have info about any pid of workers */
-	return 0;
-}
-
-void create_worker_processes(int num_workers, int* is_parent, int* is_worker) {
-	pid_t pid;
-
-	for(int i = 0; i < num_workers; i++) {
-		if (*is_parent) {
-			pid = fork();
-			if (pid == -1) {
-				die("fork:");
-			}
-			if (pid == 0) {
-				/* child */
-				*is_parent = 0;
-				*is_worker = 1;
-				printf("Worker process %d created (PID: %d)\n", i, getpid());
-			}
-			else {
-				/* parent */
-				/* exit(0); */
-			}
-		}
-	}
-}
-
-void monitor_input_dir(const char* input_dir, int interval_sec, int is_monitor) {
-	/* who monitors? monitor */
-	if (!is_monitor) {
-		return;
-	}
-
+int new_files_detected(const char* input_dir) {
 	/* file/watch descriptor */
 	int fd, wd;
-	char buf[1024];
+	char buf[BUFMAX];
 
 	/* inotify */
 	fd = inotify_init();
@@ -163,113 +158,136 @@ void monitor_input_dir(const char* input_dir, int interval_sec, int is_monitor) 
 		die("inotify_add_watch:");
 	}
 
-	while(!time_to_go) {
-		printf("Monitoring directory %s for new files...\n", input_dir);
-		/* write(STDOUT_FILENO, "Monitoring directory for new files...\n", 38); */
+	/* monitor the directory, send signal to parent if detects a change */
+	ssize_t len = read(fd, buf, BUFMAX);
+	if (len == -1) {
+		die("read:");
+	}
 
-		/* monitor the directory, send signal to parent if detects a change */
-		ssize_t len = read(fd, buf, sizeof(buf));
-		if (len == -1) {
-			die("read:");
+	struct inotify_event *event;
+	for (char *ptr = buf; ptr < buf + len; ptr += sizeof(struct inotify_event) + event->len) {
+		event = (struct inotify_event *) ptr;
+		if (event->mask & IN_CREATE) {
+			printf("New file '%s' detected in directory '%s'\n", event->name, input_dir);
+			/* send signal */
+			kill(getppid(), SIGUSR1);
+			close(fd);
+			return 1;
+		}
+	}
+	return 0;
+}
+
+int main(int argc, char** argv) {
+	if (argc != 2) {
+		die("usage: %s [CONFIGFILE]", argv[0]);
+	}
+
+	pid_t pid;
+	char buf[BUFMAX];
+	char input_dir[256];
+	char output_dir[256];
+	int num_workers = 0;
+	int interval_ms = 0;
+	char* config_filename = argv[1];
+
+	read_config_file(config_filename, input_dir, output_dir, 
+			&num_workers, &interval_ms);
+
+	struct sigaction act;
+	sigaction_init(&act);
+
+	int monitor_pipe[2];
+
+	pid = fork();
+	if (pid == -1) {
+		die("fork:");
+	}
+	if (pid > 0) {
+		/* PARENT */
+		close(monitor_pipe[1]);
+
+		/**
+		 * 2 pipes for each comunication between parent and a worker
+		 * int worker_pipes[2N][2];
+		 */
+		/* array of pointers */
+		int** worker_pipes = (int**)malloc(2 * num_workers * sizeof(int*));
+		if (worker_pipes == NULL) {
+			die("malloc:");
 		}
 
-		struct inotify_event *event;
-		for (char *ptr = buf; ptr < buf + len; ptr += sizeof(struct inotify_event) + event->len) {
-			event = (struct inotify_event *) ptr;
-			if (event->mask & IN_CREATE) {
-				printf("New file '%s' detected in directory '%s'\n", event->name, input_dir);
-				/* send signal */
+		/* each pointer points to int fd[2] */
+		for(int i = 0; i < 2 * num_workers; i++) {
+			worker_pipes[i] = (int*)malloc(2 * sizeof(int));
+			if (worker_pipes[i] == NULL) {
+				die("malloc:");
 			}
 		}
 
-		sleep(interval_sec);
-	}
-
-	close(fd);
-}
-
-void handle_signal(const int signo) {
-	/* upon receiving a signal, the parent process should distribute the new files */
-	if (signo == SIGUSR1) {
-		write(STDOUT_FILENO,"Parent process: received SIGUSR1\n",33);
-	}
-	/* once a child has finished copying all files for a candidate, it should inform its parent */
-	if (signo == SIGUSR2) {
-		write(STDOUT_FILENO,"Parent process: received SIGUSR1\n",33);
-	}
-	/* to terminate the application, the parent process must handle the SIGINT signal */
-	if (signo == SIGINT) {
-		write(STDOUT_FILENO,"Parent process: received SIGINT\n",32);
-		time_to_go = 1;
-	}
-}
-
-void distribute_workers(pid_t* pid_workers);
-
-void copy_files(const char* input_dir, const char* output_dir, int appl_num);
-
-void generate_report_file(const char* output_dir);
-
-
-int main() {
-	struct sigaction act;
-	pid_t pid_monitor;
-	pid_t* pid_workers;
-	/* int status; */
-	/* flags */
-	int is_parent = 1, is_monitor = 0, is_worker = 0;
-	time_to_go = 0;
-	/* configuration variables */
-	char input_dir[256], output_dir[256];
-	int num_workers = 0, interval_sec = 0;
-
-	read_config_file("filebot.conf", input_dir, output_dir, &num_workers, &interval_sec);
-
-	/* dynamic array */
-	pid_workers = (pid_t*)calloc(num_workers, sizeof(pid_t));
-	if (pid_workers == NULL) {
-		die("calloc:");
-	}
-
-	/* zeroes sigaction structure */
-	memset(&act, 0, sizeof(struct sigaction));
-	/* block all signals during signal handling */
-	if(sigfillset(&act.sa_mask) != 0) {
-		die("sigfillset:");
-	}
-	/* unblock signals */
-	sigdelset(&act.sa_mask, SIGUSR1);
-	sigdelset(&act.sa_mask, SIGUSR2);
-	sigdelset(&act.sa_mask, SIGINT);
-
-	/* act.sa_handler = handle_signal; */
-	act.sa_flags = SA_RESTART;
-	/* register signal handlers */
-	sigaction(SIGUSR1, &act, NULL);
-	sigaction(SIGUSR2, &act, NULL);
-	sigaction(SIGINT, &act, NULL);
-
-	pid_monitor = create_monitor_process(&is_parent, &is_monitor);
-
-	for (int i = 0; i < num_workers; i++) {
-		pid_workers[i] = create_worker_process(i, &is_parent, &is_worker);
-	}
-
-	monitor_input_dir(input_dir, interval_sec, is_monitor);
-
-	/* terminate the application TODO */
-	if (is_parent) {
-		kill(pid_monitor, SIGINT);
-		waitpid(pid_monitor, NULL, 0);
-
-		for (int i = 0; i < num_workers; i++) {
-			kill(pid_workers[i], SIGINT);
+		for(int i = 0; i < 2 * num_workers; i++) {
+			if(pipe(worker_pipes[i]) == -1) {
+				die("pipe:");
+			}
 		}
 
-		for (int i = 0; i < num_workers; i++) {
-			waitpid(pid_workers[i], NULL, 0);
+		st_workers* ws = st_workers_init(worker_pipes, num_workers);
+
+		/* create N workers */
+		for(int i = 0; i < num_workers; i++) {
+			pid = fork();
+			if (pid == -1) {
+				die("fork:");
+			}
+			if (pid > 0) {
+				/* PARENT */
+				/* set the worker pids */
+				ws->pids[i] = pid;
+
+				close(worker_pipes[i*2][0]);
+				close(worker_pipes[i*2+1][1]);
+
+			} else {
+				/* WORKER */
+				close(monitor_pipe[0]); /* workers dont read from monitor */
+				close(worker_pipes[i*2][1]);
+				close(worker_pipes[i*2+1][0]);
+			}
 		}
+
+		if (pid > 0) {
+			/* PARENT */
+			while(!terminate) {
+				if (dist_files) {
+					if (read(monitor_pipe[0], line, MAXLINE) == -1) {
+						die("read from monitor pipe:");
+					}
+				}
+			}
+		}
+
+		wait(NULL);
+
+		/* free memory */
+		for (int i = 0; i < num_workers; i++) {
+			free(worker_pipes[i]);
+		} free(worker_pipes);
+
+	} else {
+		/* MONITOR */
+		close(monitor_pipe[0]);
+		monitor_process(input_dir); //TODO
+		// or
+		//while(1) {
+		//	if (new_files_detected(input_dir)) {
+		//		dist_files = 1;
+		//		write(monitor_pipe[1], "test\n", 5);
+		//	} else {
+		//		dist_files = 0;
+		//	}
+		//	usleep(interval_ms * 1000);
+		//}
 	}
-	
+
 	return 0;
 }
