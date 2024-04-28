@@ -23,7 +23,7 @@ ${EXEC}: ${OBJFILES}
 ${OBJFILES}: ${SOURCES} ${ASMSOURCES} ${INCLUDES}
 
 run: ${EXEC}
-	./${EXEC}
+	./${EXEC} filebot.conf
 
 clean:
 	rm -f ${OBJFILES} *.o ${EXEC}

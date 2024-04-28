@@ -18,12 +18,12 @@ volatile sig_atomic_t dist_files = 0;
 void handle_signal(const int signo) {
 	/* if new files are detected, a signal should be sent to the parent process */
 	if (signo == SIGUSR1) {
-		write(STDOUT_FILENO,"Parent process: received SIGUSR1\n",33);
+		write(STDOUT_FILENO,"received SIGUSR1\n",17);
 		dist_files = 1;
 	}
 	/* to terminate the application, the parent process must handle the SIGINT signal */
 	if (signo == SIGINT) {
-		write(STDOUT_FILENO,"Parent process: received SIGINT\n",32);
+		write(STDOUT_FILENO,"received SIGINT\n",16);
 		terminate = 1;
 	}
 }
@@ -106,42 +106,6 @@ void read_config_file(const char *filename, char* input_dir, char* output_dir,
 	fclose(file);
 }
 
-int new_files_detected(const char* input_dir) {
-	/* file/watch descriptor */
-	int fd, wd;
-	char buf[BUFMAX];
-
-	/* inotify */
-	fd = inotify_init();
-	if (fd == -1) {
-		die("inotify_init:");
-	}
-
-	wd = inotify_add_watch(fd, input_dir, IN_CREATE);
-	if (wd == -1) {
-		die("inotify_add_watch:");
-	}
-
-	/* monitor the directory, send signal to parent if detects a change */
-	ssize_t len = read(fd, buf, BUFMAX);
-	if (len == -1) {
-		die("read:");
-	}
-
-	struct inotify_event *event;
-	for (char *ptr = buf; ptr < buf + len; ptr += sizeof(struct inotify_event) + event->len) {
-		event = (struct inotify_event *) ptr;
-		if (event->mask & IN_CREATE) {
-			printf("New file '%s' detected in directory '%s'\n", event->name, input_dir);
-			/* send signal */
-			kill(getppid(), SIGUSR1);
-			close(fd);
-			return 1;
-		}
-	}
-	return 0;
-}
-
 void monitor_process(const char* input_dir, int interval_ms) {
 	/* file/watch descriptor */
 	int fd, wd;
@@ -184,6 +148,25 @@ void monitor_process(const char* input_dir, int interval_ms) {
 
 	close(fd);
 	exit(0);
+}
+
+int get_jobref_from_file(const char* filename, char* jobref, size_t nbytes) {
+	if (filename == NULL || jobref == NULL || nbytes <= 0) {
+		return -1;
+	}
+
+	const char* patterns[] = {
+		"-email.txt",
+		"-candidate-data.txt"
+	};
+	size_t num_patterns = sizeof(patterns) / sizeof(patterns[0]);
+
+	/* if filename matches *-email.txt */
+
+	/* else if filename matches *-candidate-data.txt */
+
+	/* else: try to guess jobref based on output dir, return -1 if fails */
+	return -1;
 }
 
 int main(int argc, char** argv) {
@@ -259,6 +242,14 @@ int main(int argc, char** argv) {
 				close(monitor_pipe[0]); /* workers dont read from monitor */
 				close(worker_pipes[i*2][1]);
 				close(worker_pipes[i*2+1][0]);
+
+				while(!terminate) {
+
+				}
+				/* exit workers */
+				close(worker_pipes[1*2][0]);
+				close(worker_pipes[i*2+1][1]);
+				exit(0);
 			}
 		}
 
@@ -271,20 +262,19 @@ int main(int argc, char** argv) {
 					}
 				}
 			}
+			/* wait for other processes to terminate */
 			wait(NULL);
+
+			/* free memory */
+			for (int i = 0; i < num_workers; i++) {
+				free(worker_pipes[i]);
+			}
+			
+			free(worker_pipes);
+
+			/* exit normally */
+			exit(0);
 		}
-
-
-		/* free memory */
-		for (int i = 0; i < num_workers; i++) {
-			free(worker_pipes[i]);
-		}
-		
-		free(worker_pipes);
-
-		/* exit normally */
-		exit(0);
-
 	} else {
 		/* MONITOR */
 		close(monitor_pipe[0]);
