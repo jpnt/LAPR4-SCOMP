@@ -316,7 +316,12 @@ int main(int argc, char** argv) {
 			}
 		}
 
-		st_workers* ws = st_workers_init(worker_pipes, num_workers);
+		st_workers* workers = st_workers_init(worker_pipes, num_workers);
+
+
+		/* create fifo struct to hold info about the files to copy */
+		Vec* fifo = vec_create(num_workers);
+
 
 		/* create N workers */
 		for(int i = 0; i < num_workers; i++) {
@@ -327,7 +332,7 @@ int main(int argc, char** argv) {
 			if (pid > 0) {
 				/* PARENT */
 				/* set the worker pids */
-				ws->pids[i] = pid;
+				workers->pids[i] = pid;
 
 				close(worker_pipes[i*2][0]);
 				close(worker_pipes[i*2+1][1]);
@@ -340,7 +345,7 @@ int main(int argc, char** argv) {
 
 				while(!terminate) {
 					/* continuously wait for more work */
-
+					// STUCK HERE
 
 
 					/* avoid high CPU usage */
@@ -360,11 +365,17 @@ int main(int argc, char** argv) {
 					if (read(monitor_pipe[0], buf, sizeof(buf)) == -1) {
 						die("read from monitor pipe:");
 					}
+					/* add to fifo */
+					vec_push(fifo, buf);
+					
 					/* send work across workers */
-
-
-
-
+					for (int i = 0; i < num_workers; i++) {
+						if (workers->ready[i]) {
+							workers->ready[i] = 0;
+							char* filename = vec_remove(fifo, 0);
+							write(workers->worker_pipes[i*2][1], filename, strlen(filename));
+						}
+					}
 				}
 				/* avoid high CPU usage */
 				usleep(interval_ms);
