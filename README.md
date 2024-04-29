@@ -81,7 +81,17 @@ job references and files available).
 The Operator of the Backoffice will import the files produced by the Applications File Bot and 
 register the applications, creating candidates that dot not exist in the system.
 
+---
+
+## Processes
+
 ![ApplicationsFileBot Processes](./svg/processes.drawio.svg)
+
+## Inter process communication
+
+TBC. Does not account for different worker error situations
+
+![IPC](./svg/ipc.drawio.svg)
 
 ---
 

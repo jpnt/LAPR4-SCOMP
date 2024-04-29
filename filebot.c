@@ -18,12 +18,12 @@ volatile sig_atomic_t dist_files = 0;
 void handle_signal(const int signo) {
 	/* if new files are detected, a signal should be sent to the parent process */
 	if (signo == SIGUSR1) {
-		write(STDOUT_FILENO,"received SIGUSR1\n",17);
+		write(STDOUT_FILENO,"received SIGUSR1, distributing files...\n",40);
 		dist_files = 1;
 	}
 	/* to terminate the application, the parent process must handle the SIGINT signal */
 	if (signo == SIGINT) {
-		write(STDOUT_FILENO,"received SIGINT\n",16);
+		write(STDOUT_FILENO,"received SIGINT, terminating...\n",32);
 		terminate = 1;
 	}
 }
@@ -122,9 +122,9 @@ void monitor_process(const char* input_dir, int interval_ms) {
 		die("inotify_add_watch:");
 	}
 
-	while(!terminate) {
-		write(STDOUT_FILENO, "Monitoring directory for new files...\n", 38);
+	write(STDOUT_FILENO, "Monitoring directory for new files...\n", 38);
 
+	while(!terminate) {
 		/* monitor the directory, send signal to parent if detects a change */
 		ssize_t len = read(fd, buf, sizeof(buf));
 		if (len == -1) {
@@ -132,11 +132,13 @@ void monitor_process(const char* input_dir, int interval_ms) {
 		}
 
 		struct inotify_event *event;
-
 		for (char *ptr = buf; ptr < buf + len; ptr += sizeof(struct inotify_event) + event->len) {
 			event = (struct inotify_event *) ptr;
 			if (event->mask & IN_CREATE) {
-				printf("New file '%s' detected in directory '%s'\n", event->name, input_dir);
+
+				write(STDOUT_FILENO, event->name, strlen(event->name));
+				write(STDOUT_FILENO, "\n", 1);
+
 				/* send signal */
 				dist_files = 1;
 			} else {
@@ -150,24 +152,117 @@ void monitor_process(const char* input_dir, int interval_ms) {
 	exit(0);
 }
 
+int get_jobapl_from_filename(const char* filename) {
+	int num_apl = 0;
+	int base = 1;
+	/* number before '-' */
+	for (int i = 0; filename[i] != '-' && filename[i] != '\0'; i++) {
+		if (filename[i] < '0' || filename[i] > '9') {
+			return -1;
+		}
+		num_apl = num_apl * base + *(filename+i - '0');
+		base *= 10;
+	}
+	return num_apl;
+}
+
+/**
+ * get the JobReference from a file, only available in *-email.txt and *-candidate-data.txt files;
+ * returns 0 in case of SUCCESS, -1 if it FAILS and number of application (>0) if it
+ * can not find the JobReference in the file
+ */
 int get_jobref_from_file(const char* filename, char* jobref, size_t nbytes) {
 	if (filename == NULL || jobref == NULL || nbytes <= 0) {
 		return -1;
 	}
 
-	const char* patterns[] = {
-		"-email.txt",
-		"-candidate-data.txt"
-	};
-	size_t num_patterns = sizeof(patterns) / sizeof(patterns[0]);
+	size_t filename_len = strlen(filename);
 
-	/* if filename matches *-email.txt */
+	/* if filename matches *-candidate-data.txt */
+	if (filename_len > sizeof("-candidate-data.txt") &&
+			strcmp(filename + filename_len - sizeof("-email.txt") + 1,"email.txt") == 0) {
 
-	/* else if filename matches *-candidate-data.txt */
+		FILE* fp = fopen(filename, "r");
+		if (fp == NULL) {
+			return -1;
+		}
+		/* read first line to get jobref */
+		if (fgets(jobref,nbytes,fp)==NULL) {
+			fclose(fp);
+			return -1;
+		}
 
-	/* else: try to guess jobref based on output dir, return -1 if fails */
+		printf("Job reference (from candidate-data file): %s\n", jobref);
+
+		fclose(fp);
+		return 0;
+	}
+
+	/* else if filename matches *-email.txt */
+	if (filename_len > sizeof("-email.txt") &&
+			strcmp(filename + filename_len - sizeof("-email.txt") + 1,"email.txt") == 0) {
+
+		FILE* fp = fopen(filename, "r");
+		if (fp == NULL) {
+			return -1;
+		}
+		/* skip first 3 lines */
+		for (int i = 0; i < 3; i++) {
+			if (fgets(jobref,nbytes,fp)==NULL) {
+				fclose(fp);
+				return -1;
+			}
+		}
+
+		/* parse 4th line which contains job reference */
+		if (fscanf(fp,"%*s %*s %*s %s",jobref) == 1) {
+			printf("Job reference (from email file): %s\n",jobref);
+
+			fclose(fp);
+			return 0;
+		}
+		else {
+			fclose(fp);
+			return -1;
+		}
+	}
+
+	/* else return the number of the application */
+	int num_jobapl = get_jobapl_from_filename(filename);
+	return num_jobapl;
+}
+
+/**
+ * Copy file to destination without using JobReference, useful when get_jobref_from_file()
+ * does not return a jobref, i.e. file is not email.txt neither candidate-data.txt;
+ * returns 0 in case of SUCCESS, -1 in case of failure
+ */
+int copy_to_dest_without_jobref(const char* filename, char* input_dir, char* output_dir) {
+	/* orig=input_dir/filename */
+	// dest=output_dir/*/Application_N
+	
+	/* make sure it exists, if not return -1 */
+
+	/* cp orig dest */
+	
 	return -1;
 }
+
+/**
+ * Copy file to destination using JobReference, when get_jobref_from_file() returns 0;
+ * returns 0 in case of SUCCESS, -1 in case of failure
+ */
+int copy_to_dest(const char* filename, const char* jobref, char* input_dir, char* output_dir) {
+	/* orig=input_dir/filename
+	/* dest=output_dir/jobref/Application_N */
+
+	/* if not exists, mkdir dest */
+
+	/* cp orig dest */
+
+	return -1;
+}
+
 
 int main(int argc, char** argv) {
 	if (argc != 2) {
@@ -244,7 +339,12 @@ int main(int argc, char** argv) {
 				close(worker_pipes[i*2+1][0]);
 
 				while(!terminate) {
+					/* continuously wait for more work */
 
+
+
+					/* avoid high CPU usage */
+					usleep(interval_ms);
 				}
 				/* exit workers */
 				close(worker_pipes[1*2][0]);
@@ -257,10 +357,17 @@ int main(int argc, char** argv) {
 			/* PARENT */
 			while(!terminate) {
 				if (dist_files) {
-					if (read(monitor_pipe[0], buf, BUFMAX) == -1) {
+					if (read(monitor_pipe[0], buf, sizeof(buf)) == -1) {
 						die("read from monitor pipe:");
 					}
+					/* send work across workers */
+
+
+
+
 				}
+				/* avoid high CPU usage */
+				usleep(interval_ms);
 			}
 			/* wait for other processes to terminate */
 			wait(NULL);
@@ -281,5 +388,6 @@ int main(int argc, char** argv) {
 		monitor_process(input_dir, interval_ms);
 	}
 
+	/* should not end up here */
 	die("Error: filebot exited abnormally");
 }
