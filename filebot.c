@@ -4,6 +4,7 @@
 #include <unistd.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <sys/stat.h>
 #include <sys/inotify.h>
 #include <stdlib.h>
 #include <string.h>
@@ -14,12 +15,18 @@
 
 volatile sig_atomic_t terminate = 0;
 volatile sig_atomic_t dist_files = 0;
+volatile sig_atomic_t w_has_work = 0;
 
 void handle_signal(const int signo) {
 	/* if new files are detected, a signal should be sent to the parent process */
 	if (signo == SIGUSR1) {
 		write(STDOUT_FILENO,"received SIGUSR1, distributing files...\n",40);
 		dist_files = 1;
+	}
+
+	if (signo == SIGUSR2) {
+		write(STDOUT_FILENO, "received SIGUSR2, doing work...\n", 32);
+		w_has_work = 1;
 	}
 	/* to terminate the application, the parent process must handle the SIGINT signal */
 	if (signo == SIGINT) {
@@ -232,18 +239,34 @@ int get_jobref_from_file(const char* filename, char* jobref, size_t nbytes) {
 	return num_jobapl;
 }
 
+/* Check if a directory exists; returns 1 if it does, 0 if not */
+int dir_exists(char* dir) {
+	struct stat statbuf;
+	return stat(dir, &statbuf) == 0 && S_ISDIR(statbuf.st_mode);
+}
+
 /**
  * Copy file to destination without using JobReference, useful when get_jobref_from_file()
  * does not return a jobref, i.e. file is not email.txt neither candidate-data.txt;
  * returns 0 in case of SUCCESS, -1 in case of failure
  */
-int copy_to_dest_without_jobref(const char* filename, char* input_dir, char* output_dir) {
+int copy_to_dest_without_jobref(const char* filename, char* input_dir, char* output_dir, int jobapl, int worker_pipes[2]) {
 	/* orig=input_dir/filename */
 	// dest=output_dir/*/Application_N
-	
-	/* make sure it exists, if not return -1 */
+
+	char* jobapl_str;
+	sprintf(jobapl_str, "%d", jobapl);
+	char* jobapl_dir = strcat("Application_", jobapl_str);
+
+	char* out_dir_rec_jobapl = strcat(strcat(output_dir, "/*/"), jobapl_dir);
+
+	char* file_cp = strcat(strcat(input_dir, "/"), filename);
 
 	/* cp orig dest */
+	if ((execl("/bin/cp", "cp", file_cp, out_dir_rec_jobapl, (char*)0)) == -1) {
+		char* msg = strcat("try again: ", filename);
+		write(*worker_pipes, msg, strlen(msg));
+	}
 	
 	return -1;
 }
@@ -253,12 +276,26 @@ int copy_to_dest_without_jobref(const char* filename, char* input_dir, char* out
  * returns 0 in case of SUCCESS, -1 in case of failure
  */
 int copy_to_dest(const char* filename, const char* jobref, char* input_dir, char* output_dir) {
-	/* orig=input_dir/filename
+	/* orig=input_dir/filename */
 	/* dest=output_dir/jobref/Application_N */
+	
+	int jobapl = get_jobapl_from_filename(filename);
+	char* jobapl_str;
+	sprintf(jobapl_str, "%d", jobapl);
+	char* jobapl_dir = strcat("Application_", jobapl_str);
+
+	char* out_dir_jobref = strcat(strcat(output_dir, "/"), jobref); /* out/jobref */
+	char* out_dir_jobref_apl = strcat(strcat(out_dir_jobref, "/"), jobapl_dir); /* out/jobref/jobapl */
 
 	/* if not exists, mkdir dest */
+	if (!dir_exists(out_dir_jobref)) {
+		execl("/bin/mkdir", "mkdir", out_dir_jobref, (char*)0);
+	}
+
+	char* file_cp = strcat(strcat(input_dir, "/"), filename);
 
 	/* cp orig dest */
+	execl("/bin/cp", "cp", file_cp, out_dir_jobref, (char*)0);
 
 	return -1;
 }
@@ -345,9 +382,59 @@ int main(int argc, char** argv) {
 
 				while(!terminate) {
 					/* continuously wait for more work */
-					// STUCK HERE
+					if (w_has_work) {
+						/* exit if it fails to read */
+						if (read(worker_pipes[i*2][0], buf, sizeof(buf)) == -1) {
+							// TODO
+							die("read from worker pipe:");
+						}
 
+						char jobref[BUFMAX];
+						int jobapl;
 
+						jobapl = get_jobref_from_file(buf, jobref, sizeof(jobref));
+						if (jobapl == -1) {
+							kill(SIGTERM, getppid());
+							die("Error: get_jobref_from_file: could not read from file");
+
+						} else if (jobapl == 0) {
+							//// cp in/file out/jobref/jobapl
+							//copy_to_dest()
+
+							jobapl = get_jobapl_from_filename(buf);
+							char* jobapl_str;
+							sprintf(jobapl_str, "%d", jobapl);
+							char* jobapl_dir = strcat("Application_", jobapl_str);
+
+							char* out_dir_jobref = strcat(strcat(output_dir, "/"), jobref); /* out/jobref */
+							char* out_dir_jobref_apl = strcat(strcat(out_dir_jobref, "/"), jobapl_dir); /* out/jobref/jobapl */
+
+							if (!dir_exists(out_dir_jobref)) {
+								execl("/bin/mkdir", "mkdir", out_dir_jobref, (char*)0);
+							}
+
+							char* file_cp = strcat(strcat(input_dir, "/"), buf);
+
+							execl("/bin/cp", "cp", file_cp, out_dir_jobref, (char*)0);
+
+						} else {
+							// cp in/file out/*/jobapl
+							//copy_to_dest_without_jobref()
+							
+							char* jobapl_str;
+							sprintf(jobapl_str, "%d", jobapl);
+							char* jobapl_dir = strcat("Application_", jobapl_str);
+
+							char* out_dir_rec_jobapl = strcat(strcat(output_dir, "/*/"), jobapl_dir);
+
+							char* file_cp = strcat(strcat(input_dir, "/"), buf);
+
+							if ((execl("/bin/cp", "cp", file_cp, out_dir_rec_jobapl, (char*)0)) == -1) {
+								char* msg = strcat("try again: ", buf);
+								write(worker_pipes[i*2+1][1], msg, strlen(msg));
+							}
+						}
+					}
 					/* avoid high CPU usage */
 					usleep(interval_ms);
 				}
@@ -373,7 +460,9 @@ int main(int argc, char** argv) {
 						if (workers->ready[i]) {
 							workers->ready[i] = 0;
 							char* filename = vec_remove(fifo, 0);
-							write(workers->worker_pipes[i*2][1], filename, strlen(filename));
+							if (write(workers->worker_pipes[i*2][1], filename, strlen(filename))) {
+								die("write:");
+							}
 						}
 					}
 				}
@@ -382,6 +471,8 @@ int main(int argc, char** argv) {
 			}
 			/* wait for other processes to terminate */
 			wait(NULL);
+
+			//write_report_file(output_dir);
 
 			/* free memory */
 			for (int i = 0; i < num_workers; i++) {
