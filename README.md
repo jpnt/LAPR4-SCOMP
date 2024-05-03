@@ -87,12 +87,6 @@ register the applications, creating candidates that dot not exist in the system.
 
 ![ApplicationsFileBot Processes](./svg/processes.drawio.svg)
 
-## Inter process communication
-
-TBC. Does not account for different worker error situations
-
-![IPC](./svg/ipc.drawio.svg)
-
 ---
 
 ## Monitoring Input Directory: Polling vs Inotify
