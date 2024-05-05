@@ -325,6 +325,7 @@ void parent_process(const char* input_dir, const char* output_dir, st_workers* w
 				}
 			}
 
+			/* schedule work */
 			while (fifo->size != 0) {
 				for (int i = 0; i < num_workers; i++) {
 					if (ws->ready[i]) {
@@ -347,12 +348,13 @@ void parent_process(const char* input_dir, const char* output_dir, st_workers* w
 		usleep(100);
 	}
 
-	generate_report_file(output_dir);
-
 	/* exit all processes */
 	closedir(dir);
 	vec_destroy(fifo);
 	cleanup(ws, num_workers, pid_monitor);
+
+	generate_report_file(output_dir);
+
 	write(STDOUT_FILENO, "Exiting from parent process...\n", 31);
 	exit(0);
 }
@@ -360,37 +362,22 @@ void parent_process(const char* input_dir, const char* output_dir, st_workers* w
 void worker_process(const char* input_dir, const char* output_dir, st_workers* ws, int num_workers) {
 	char buf[PIPE_BUF];
 	while(!terminate) {
-		if (distfiles) {
-			distfiles = 0;
-			for (int i = 0; i < num_workers; i++) {
-				if (ws->pids[i] == getpid()) {
-					/* the pipe will have the jobapl */
-					if (read(ws->worker_pipes[i*2][0], buf, sizeof(buf)) == -1) {
-						perror("read");
-					}
-					int jobapl = atoi(buf);
-
-					printf("(DEBUG) jobapl = %d", jobapl);
-
-					/* get job reference from x-candidate-data.txt */
-					char jobref[128];
-					char ca_data[128];
-					snprintf(ca_data, sizeof(ca_data), "%d-candidate-data.txt", jobapl);
-
-					int jr = get_jobref_from_ca_data(jobref, sizeof(jobref), ca_data);
-					if (jr == -1) {
-						fprintf(stderr, "Error: failed to get jobref from %d-candidate-data.txt\n", jobapl);
-					}
-					
-					if (copy_all_files(input_dir, output_dir, jobref, jobapl) == -1) {
-						fprintf(stderr, "Error: failed to copy all files\n");
-					}
+		for (int i = 0; i < num_workers; i++) {
+			if (ws->pids[i] == getpid()) {
+				/* the pipe will have jobref/jobapl */
+				if (read(ws->worker_pipes[i*2][0], buf, sizeof(buf)) == -1) {
+					perror("read");
 				}
+				printf("(DEBUG) pipe read from worker = %s", buf);
+				
+				//if (copy_all_files(input_dir, output_dir, jobref, jobapl) == -1) {
+				//	fprintf(stderr, "Error: failed to copy all files\n");
+				//}
 			}
+
 		}
 
 		usleep(100);
-
 	}
 
 	write(STDOUT_FILENO, "Exiting from worker process...\n", 31);
@@ -433,7 +420,7 @@ int main(int argc, char** argv) {
 		}
 		else if (pid > 0) {
 			/* PARENT */
-			parent_process(input_dir, ws, num_workers, pid_monitor);
+			parent_process(input_dir, output_dir, ws, num_workers, pid_monitor);
 		}
 		else {
 			/* WORKERS */
