@@ -7,6 +7,7 @@
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#include <fcntl.h>
 
 #include "util.h"
 
@@ -187,7 +188,7 @@ int mkdir_if_need(const char* dir) {
 	return 0;
 }
 
-
+/* match a regular expression: ret -1 if error, 0 if no match found, 1 if found */
 int matches_regex(const char* str, const char* regex_pattern) {
 	regex_t reg;
 	int err;
@@ -209,8 +210,21 @@ int matches_regex(const char* str, const char* regex_pattern) {
 	return err == 0 ? 1 : 0;
 }
 
+int generate_report_file(const char* output_dir) {
+	int fd = open("report.txt", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+	if (fd == -1) {
+		perror("generate_report_file: open");
+		return -1;
+	}
 
-void cleanup(st_workers* ws, int num_workers, pid_t pid_monitor, int parent_fd[2]) {
+	dup2(fd, STDOUT_FILENO);
+	close(fd);
+	execv("/usr/bin/tree", (char*[]){"tree", (char*)output_dir, NULL});
+	perror("generate_report_file: execv");
+	return -1;
+}
+
+void cleanup(st_workers* ws, int num_workers, pid_t pid_monitor) {
 	for (int i = 0; i < num_workers; i++) {
 		close(ws->worker_pipes[i*2][1]);
 		close(ws->worker_pipes[i*2+1][0]);
@@ -220,10 +234,6 @@ void cleanup(st_workers* ws, int num_workers, pid_t pid_monitor, int parent_fd[2
 
 	kill(pid_monitor, SIGKILL);
 	waitpid(pid_monitor, NULL, 0);
-
-	close(parent_fd[0]);
-
-	die("cleanup:");
 }
 
 void die(const char *fmt, ...) {

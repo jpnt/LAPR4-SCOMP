@@ -39,14 +39,12 @@ void sigaction_setup(struct sigaction* act) {
 	}
 	/* unblock signals */
 	sigdelset(&act->sa_mask, SIGUSR1);
-	sigdelset(&act->sa_mask, SIGUSR2);
 	sigdelset(&act->sa_mask, SIGINT);
 
 	act->sa_handler = handle_signal;
 	act->sa_flags = SA_RESTART;
 	/* register signal handlers */
 	sigaction(SIGUSR1, act, NULL);
-	sigaction(SIGUSR2, act, NULL);
 	sigaction(SIGINT, act, NULL);
 }
 
@@ -121,6 +119,7 @@ int get_jobapl_from_filename(const char* filename) {
 	return num_apl;
 }
 
+/* get jobref from x-candidate-data.txt by extracting the first line */
 int get_jobref_from_ca_data(char* jobref, size_t nbytes, char* ca_data) {
 	FILE* fp = fopen(ca_data, "r");
 	if (fp == NULL) {
@@ -221,6 +220,7 @@ int create_workers(int num_workers, st_workers* ws) {
 			return pid;
 		}
 		else if (pid == 0) {
+			write(STDOUT_FILENO, "Worker process created\n", 23);
 			close(ws->worker_pipes[i*2][1]);
 			close(ws->worker_pipes[i*2+1][0]);
 			return pid;
@@ -230,43 +230,22 @@ int create_workers(int num_workers, st_workers* ws) {
 			ws->pids[i] = pid;
 			close(ws->worker_pipes[i*2][0]);
 			close(ws->worker_pipes[i*2+1][1]);
-			return pid;
 		}
 	}
 
 	return pid;
 }
 
-void parent_process(st_workers* ws, int num_workers, pid_t pid_monitor, int parent_fd[2]) {
-	int apl;
-	
-	while(!terminate) {
-		if (distfiles) {
-			ssize_t n_bytes = read(parent_fd[0], &apl, sizeof(int));
-			if (n_bytes == -1) {
-				perror("read");
-			}
-
-			char ca_data[256];
-			snprintf(ca_data, sizeof(ca_data), "%d-candidate-data.txt",
-					apl);
-
-
-			
-
-		}
-	}
-
-	cleanup(ws, num_workers, pid_monitor, parent_fd);
-	exit(0);
-}
-
-void monitor_process(const char* input_dir, int interval_ms, int parent_fd[2]) {
-	/* close read parent fd */
-	close(parent_fd[0]);
+void monitor_process(const char* input_dir, int interval_ms) {
 	/* file/watch descriptor */
 	int fd, wd;
+	pid_t ppid;
 	char buf[BUFMAX];
+
+	ppid = getppid();
+	if (ppid == -1) {
+		die("monitor_process: parent process not found:");
+	}
 
 	/* inotify */
 	fd = inotify_init();
@@ -292,62 +271,137 @@ void monitor_process(const char* input_dir, int interval_ms, int parent_fd[2]) {
 		for (char *ptr = buf; ptr < buf + len; ptr += sizeof(struct inotify_event) + event->len) {
 			event = (struct inotify_event *) ptr;
 			if (event->mask & IN_CREATE) {
-				/* send application_id trough the pipe */
-				int jobapl = get_jobapl_from_filename(event->name);
-
-				ssize_t n_bytes = write(parent_fd[1], &jobapl, sizeof(int));
-				if (n_bytes == -1) {
-					perror("write");
-				}
 				/* send signal */
-				kill(SIGUSR1, getppid());
+				if (kill(ppid, SIGUSR1) == -1) {
+					die("monitor_process: kill(%d, SIGUSR1):", ppid);
+				}
 			}
 		}
 		usleep(interval_ms * 1000);
 	}
 
-	close(parent_fd[1]);
 	close(fd);
+	write(STDOUT_FILENO, "Exiting from monitor process...\n", 32);
 	exit(0);
 }
 
-void worker_process(char* input_dir, char* output_dir, st_workers* ws, int num_workers) {
-	char buf[PIPE_BUF];
+void parent_process(const char* input_dir, const char* output_dir, st_workers* ws, int num_workers, pid_t pid_monitor) {
+	int jobapl;
+	char jobref[128];
+	Vec* fifo = vec_create(num_workers);
+	DIR* dir = opendir(input_dir);
+	if (!dir) {
+		perror("parent_process: opendir");
+		return;
+	}
+	
 	while(!terminate) {
-		for (int i = 0; i < num_workers; i++) {
-			if (ws->pids[i] == getpid()) {
-				/* the pipe will have the jobapl */
-				if (read(ws->worker_pipes[i*2][0], buf, sizeof(buf)) == -1) {
-					perror("read");
-				}
-				int jobapl = atoi(buf);
-
-				printf("(DEBUG) jobapl = %d", jobapl);
-
-				/* get job reference from x-candidate-data.txt */
-				char jobref[128];
-				char ca_data[128];
-				snprintf(ca_data, sizeof(ca_data), "%d-candidate-data.txt", jobapl);
-
-				int jr = get_jobref_from_ca_data(jobref, sizeof(jobref), ca_data);
-				if (jr == -1) {
-					fprintf(stderr, "Error: failed to get jobref from %d-candidate-data.txt\n", jobapl);
+		if (distfiles) {
+			distfiles = 0;
+			/* scan input_dir and add "jobref/jobapl" to fifo */
+			struct dirent* entry;
+			while ((entry = readdir(dir)) != NULL) {
+				if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
+					/* skip "." and ".." */
+					continue;
 				}
 				
-				if (copy_all_files(input_dir, output_dir, jobref, jobapl) == -1) {
-					fprintf(stderr, "Error: failed to copy all files\n");
+				if (matches_regex(entry->d_name, "-candidate-data.txt")) {
+					if (get_jobref_from_ca_data(jobref, sizeof(jobref), entry->d_name) == -1) {
+						cleanup(ws, num_workers, pid_monitor);
+						die("parent_process: get_jobref_from_ca_data: could not extract job reference from %s", entry->d_name);
+					}
+
+					jobapl = get_jobapl_from_filename(entry->d_name);
+					if (jobapl < 1) {
+						cleanup(ws, num_workers, pid_monitor);
+						die("parent_process: get_jobapl_from_filename: invalid job application");
+					}
+
+					/* item to insert at fifo */
+					char* item = (char*)malloc(PIPE_BUF);
+					snprintf(item, PIPE_BUF, "%s/%d", jobref, jobapl);
+					vec_push(fifo, item);
+				}
+			}
+
+			while (fifo->size != 0) {
+				for (int i = 0; i < num_workers; i++) {
+					if (ws->ready[i]) {
+						ws->ready[i] = 0;
+						write(ws->worker_pipes[i*2][1], vec_remove(fifo, 0), PIPE_BUF);
+					}
+				}
+
+				for (int i = 0; i < num_workers; i++) {
+					if (ws->ready[i] == 0) {
+						ws->ready[i] = 1;
+						char buf[PIPE_BUF];
+						read(ws->worker_pipes[i*2+1][0], buf, sizeof(buf));
+					}
+				}
+			}
+
+		}
+
+		usleep(100);
+	}
+
+	generate_report_file(output_dir);
+
+	/* exit all processes */
+	closedir(dir);
+	vec_destroy(fifo);
+	cleanup(ws, num_workers, pid_monitor);
+	write(STDOUT_FILENO, "Exiting from parent process...\n", 31);
+	exit(0);
+}
+
+void worker_process(const char* input_dir, const char* output_dir, st_workers* ws, int num_workers) {
+	char buf[PIPE_BUF];
+	while(!terminate) {
+		if (distfiles) {
+			distfiles = 0;
+			for (int i = 0; i < num_workers; i++) {
+				if (ws->pids[i] == getpid()) {
+					/* the pipe will have the jobapl */
+					if (read(ws->worker_pipes[i*2][0], buf, sizeof(buf)) == -1) {
+						perror("read");
+					}
+					int jobapl = atoi(buf);
+
+					printf("(DEBUG) jobapl = %d", jobapl);
+
+					/* get job reference from x-candidate-data.txt */
+					char jobref[128];
+					char ca_data[128];
+					snprintf(ca_data, sizeof(ca_data), "%d-candidate-data.txt", jobapl);
+
+					int jr = get_jobref_from_ca_data(jobref, sizeof(jobref), ca_data);
+					if (jr == -1) {
+						fprintf(stderr, "Error: failed to get jobref from %d-candidate-data.txt\n", jobapl);
+					}
+					
+					if (copy_all_files(input_dir, output_dir, jobref, jobapl) == -1) {
+						fprintf(stderr, "Error: failed to copy all files\n");
+					}
 				}
 			}
 		}
+
+		usleep(100);
+
 	}
+
+	write(STDOUT_FILENO, "Exiting from worker process...\n", 31);
+	exit(0);
 }
 
 int main(int argc, char** argv) {
 	if (argc != 2) {
-		die("usage: %s [CONFIGFILE]", argv[0]);
+		die("Usage: %s [CONFIGFILE]", argv[0]);
 	}
 
-	int parent_fd[2];
 	st_workers* ws = NULL;
 	pid_t pid_monitor, pid;
 	char input_dir[BUFMAX];
@@ -368,18 +422,18 @@ int main(int argc, char** argv) {
 	}
 	else if (pid_monitor == 0) {
 		/* MONITOR */
-		monitor_process(input_dir, interval_ms, parent_fd);
+		monitor_process(input_dir, interval_ms);
 	}
 	else {
 		/* PARENT */
 		ws = st_workers_create(num_workers);
 		pid = create_workers(num_workers, ws);
 		if (pid == -1) {
-			cleanup(ws, num_workers, pid_monitor, parent_fd);
+			cleanup(ws, num_workers, pid_monitor);
 		}
 		else if (pid > 0) {
 			/* PARENT */
-			parent_process(ws, num_workers, pid_monitor, parent_fd);
+			parent_process(input_dir, ws, num_workers, pid_monitor);
 		}
 		else {
 			/* WORKERS */

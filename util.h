@@ -34,8 +34,9 @@ void st_workers_destroy(st_workers* ws, int num_workers);
 int dir_exists(const char* dir);
 int mkdir_if_need(const char* dir);
 int matches_regex(const char* str, const char* regex_pattern);
+int generate_report_file(const char* output_dir);
 
-void cleanup(st_workers* ws, int num_workers, pid_t pid_monitor, int parent_fd[2]);
+void cleanup(st_workers* ws, int num_workers, pid_t pid_monitor);
 void die(const char *fmt, ...);
 
 #endif /* !UTIL_H */

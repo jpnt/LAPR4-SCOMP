@@ -1,8 +1,30 @@
 # ApplicationsFileBot (US 2001)
 
-![ApplicationsFileBot Diagram](./svg/diagram.drawio.svg)
+## Percentagem de contribuição de cada elemento do grupo no sprint
+
+| Elemento | Número | Percentagem |
+|---------------- | --------------- | --------------- |
+| João Pinto    | 1221294    | 20%    |
+| Alejandro Vieira    | 1211981    | 20%    |
+| António Pereira | 1220754    | 20%    |
+| André Silva | 1220633    | 20%    |
+| Luís Alexandre | 1211250    | 20%    |
+
+## As funcionalidades implementadas e a respectiva percentagem funcional
+
+Todas as funcionalidades foram implementadas e funcionam como esperado. Os
+testes são funções executadas à parte, de forma a facilitar o debug do seu
+comportamento.
+
+## Aspetos importantes
+
+Outros aspetos importantes a referir encontram-se no resto do documento.
+
+---
 
 ## Description
+
+![ApplicationsFileBot Diagram](./svg/diagram.drawio.svg)
 
 **US 2001 As Product Owner, I want the system to, continuously, process the files
 produced by the Applications Email Bot, so that they can be imported into the system
