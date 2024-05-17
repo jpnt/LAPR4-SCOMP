@@ -257,7 +257,8 @@ void monitor_process(const char* input_dir, int interval_ms) {
 
 	wd = inotify_add_watch(fd, input_dir, IN_CREATE);
 	if (wd == -1) {
-		die("inotify_add_watch: %s:", input_dir);
+		perror("monitor_process: inotify_add_watch");
+		kill(ppid, SIGINT);
 	}
 
 	write(STDOUT_FILENO, "Monitoring directory for new files...\n", 38);
