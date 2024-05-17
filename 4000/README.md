@@ -1,4 +1,4 @@
-# Top20MostReferemcedWords (US 4000)
+# Top20MostReferencedWords (US 4000)
 
 ## Description
 
