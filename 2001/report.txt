@@ -1,0 +1,16 @@
+File-Bot-Output-Example-2
+└── IBM-000123
+    ├── Application_1
+    │   ├── 1-big-file-1.txt
+    │   ├── 1-candidate-data.txt
+    │   ├── 1-cv.txt
+    │   ├── 1-email.txt
+    │   └── 1-report-1.txt
+    └── Application_2
+        ├── 2-big-file1.txt
+        ├── 2-candidate-data.txt
+        ├── 2-cv.txt
+        ├── 2-email.txt
+        └── 2-letter.txt
+
+4 directories, 10 files
