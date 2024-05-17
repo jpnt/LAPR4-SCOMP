@@ -4,7 +4,7 @@
 
 ![ApplicationsFileBot Diagram](./svg/diagram.drawio.svg)
 
-**US 2001 As Product Owner, I want the system to, continuously, process the files
+**US 2001b As Product Owner, I want the system to, continuously, process the files
 produced by the Applications Email Bot, so that they can be imported into the system
 by initiative of the Operator**
 
