@@ -1,92 +1,98 @@
 import java.io.*;
-import java.nio.file.*;
 import java.util.*;
-import java.util.concurrent.*;
-import java.util.regex.*;
+import java.util.concurrent.atomic.*;
 
 public class CandidateDataAnalyzer {
     private static final int TOP_N = 20;
-    private static final Pattern WORD_PATTERN = Pattern.compile("\\b\\w+\\b");
+    private static final Map<String, WordData> wordMap = new HashMap<>();
 
-    public static void main(String[] args) throws InterruptedException, ExecutionException {
+    // Synchronized method to update the shared word map
+    private static synchronized void updateWordMap(String word, String fileName) {
+        WordData wordData = wordMap.getOrDefault(word, new WordData(word));
+        wordData.incrementCount();
+        wordData.addFile(fileName);
+        wordMap.put(word, wordData);
+    }
+
+    public static void main(String[] args) {
         if (args.length == 0) {
-            System.out.println("Please provide the paths to the candidate files.");
+            System.out.println("No files provided.");
             return;
         }
 
-        ExecutorService executor = Executors.newFixedThreadPool(Runtime.getRuntime().availableProcessors());
-        List<Future<Map<String, WordInfo>>> futures = new ArrayList<>();
-
-        for (String filePath : args) {
-            futures.add(executor.submit(() -> processFile(filePath)));
+        Thread[] threads = new Thread[args.length];
+        for (int i = 0; i < args.length; i++) {
+            final String fileName = args[i];
+            threads[i] = new Thread(() -> processFile(fileName));
+            threads[i].start();
         }
 
-        Map<String, WordInfo> combinedWordInfo = new HashMap<>();
-
-        for (Future<Map<String, WordInfo>> future : futures) {
-            Map<String, WordInfo> wordInfo = future.get();
-            mergeWordInfo(combinedWordInfo, wordInfo);
-        }
-
-        executor.shutdown();
-
-        List<WordInfo> sortedWordInfo = new ArrayList<>(combinedWordInfo.values());
-        sortedWordInfo.sort((a, b) -> Integer.compare(b.count, a.count));
-
-        System.out.println("Top " + TOP_N + " words:");
-        for (int i = 0; i < Math.min(TOP_N, sortedWordInfo.size()); i++) {
-            WordInfo wordInfo = sortedWordInfo.get(i);
-            System.out.println(wordInfo.word + " - " + wordInfo.count + " occurrences");
-            for (Map.Entry<String, List<Integer>> entry : wordInfo.locations.entrySet()) {
-                System.out.println("  File: " + entry.getKey());
-                System.out.println("    Lines: " + entry.getValue());
-            }
-        }
-    }
-
-    private static Map<String, WordInfo> processFile(String filePath) throws IOException {
-        Map<String, WordInfo> wordInfoMap = new HashMap<>();
-        List<String> lines = Files.readAllLines(Paths.get(filePath));
-
-        for (int lineNumber = 0; lineNumber < lines.size(); lineNumber++) {
-            Matcher matcher = WORD_PATTERN.matcher(lines.get(lineNumber));
-            while (matcher.find()) {
-                String word = matcher.group().toLowerCase();
-                wordInfoMap.putIfAbsent(word, new WordInfo(word));
-                WordInfo wordInfo = wordInfoMap.get(word);
-                wordInfo.count++;
-                wordInfo.locations.putIfAbsent(filePath, new ArrayList<>());
-                wordInfo.locations.get(filePath).add(lineNumber + 1);
+        for (Thread thread : threads) {
+            try {
+                thread.join();
+            } catch (InterruptedException e) {
+                e.printStackTrace();
             }
         }
 
-        return wordInfoMap;
+        displayTopWords();
     }
 
-    private static void mergeWordInfo(Map<String, WordInfo> combined, Map<String, WordInfo> toMerge) {
-        for (Map.Entry<String, WordInfo> entry : toMerge.entrySet()) {
-            String word = entry.getKey();
-            WordInfo newInfo = entry.getValue();
-
-            combined.putIfAbsent(word, new WordInfo(word));
-            WordInfo combinedInfo = combined.get(word);
-            combinedInfo.count += newInfo.count;
-            newInfo.locations.forEach((file, lines) -> {
-                combinedInfo.locations.putIfAbsent(file, new ArrayList<>());
-                combinedInfo.locations.get(file).addAll(lines);
-            });
+    private static void processFile(String fileName) {
+        try (BufferedReader reader = new BufferedReader(new FileReader(fileName))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                String[] words = line.split("\\W+");
+                for (String word : words) {
+                    if (!word.isEmpty()) {
+                        updateWordMap(word.toLowerCase(), fileName);
+                    }
+                }
+            }
+        } catch (IOException e) {
+            e.printStackTrace();
         }
     }
 
-    static class WordInfo {
-        String word;
-        int count;
-        Map<String, List<Integer>> locations;
+    private static void displayTopWords() {
+        List<WordData> wordDataList = new ArrayList<>(wordMap.values());
+        wordDataList.sort((wd1, wd2) -> Integer.compare(wd2.getCount(), wd1.getCount()));
 
-        WordInfo(String word) {
-            this.word = word;
-            this.count = 0;
-            this.locations = new HashMap<>();
+        System.out.println("Top " + TOP_N + " most frequently referenced words:");
+        for (int i = 0; i < Math.min(TOP_N, wordDataList.size()); i++) {
+            WordData wordData = wordDataList.get(i);
+            System.out.println(wordData);
         }
+    }
+}
+
+class WordData {
+    private final String word;
+    private final AtomicInteger count;
+    private final Set<String> files;
+
+    public WordData(String word) {
+        this.word = word;
+        this.count = new AtomicInteger(0);
+        this.files = new HashSet<>();
+    }
+
+    public void incrementCount() {
+        count.incrementAndGet();
+    }
+
+    public void addFile(String fileName) {
+        synchronized (files) {
+            files.add(fileName);
+        }
+    }
+
+    public int getCount() {
+        return count.get();
+    }
+
+    @Override
+    public String toString() {
+        return word + " (count: " + count + ", files: " + files + ")";
     }
 }
