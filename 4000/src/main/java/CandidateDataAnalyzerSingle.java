@@ -2,7 +2,7 @@ import java.io.*;
 import java.util.*;
 import java.util.concurrent.atomic.*;
 
-public class CandidateDataAnalyzer {
+public class CandidateDataAnalyzerSingle {
     private static final int TOP_N = 20;
     private static final Map<String, WordData> wordMap = new HashMap<>();
 
@@ -66,33 +66,3 @@ public class CandidateDataAnalyzer {
     }
 }
 
-class WordData {
-    private final String word;
-    private final AtomicInteger count;
-    private final Set<String> files;
-
-    public WordData(String word) {
-        this.word = word;
-        this.count = new AtomicInteger(0);
-        this.files = new HashSet<>();
-    }
-
-    public void incrementCount() {
-        count.incrementAndGet();
-    }
-
-    public void addFile(String fileName) {
-        synchronized (files) {
-            files.add(fileName);
-        }
-    }
-
-    public int getCount() {
-        return count.get();
-    }
-
-    @Override
-    public String toString() {
-        return word + " (count: " + count + ", files: " + files + ")";
-    }
-}
