@@ -12,6 +12,12 @@ public class WordData {
             this.count = new AtomicInteger(0);
             this.files = new HashSet<>();
         }
+        public WordData(String word, int count, HashSet<String> files) {
+            this.word = word;
+            this.count = new AtomicInteger(count);
+            this.files = files;
+        }
+
 
         public void incrementCount() {
             count.incrementAndGet();
